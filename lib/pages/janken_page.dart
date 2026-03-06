@@ -7,6 +7,7 @@ import '../services/ucb_service.dart';
 import '../services/random_service.dart';
 import '../widgets/janken_buttons.dart';
 import '../styles/app_styles.dart';
+import '../services/sound_service.dart';
 import 'stats_page.dart';
 import 'chart_page.dart';
 
@@ -35,6 +36,8 @@ class _JankenPageState extends State<JankenPage> {
 
   String? _lastChoice;
 
+  final _sound = SoundService.instance;
+
   void _play(String choice) {
     setState(() {
       _lastChoice = choice;
@@ -42,6 +45,8 @@ class _JankenPageState extends State<JankenPage> {
         model.play(choice);
       }
     });
+    final firstResult = _models.values.first.lastResult;
+    _sound.playResult(firstResult);
   }
 
   void _addPlayer() {
