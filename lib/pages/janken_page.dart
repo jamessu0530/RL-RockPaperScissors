@@ -1,7 +1,22 @@
 import 'package:flutter/material.dart';
+import '../models/janken_model.dart';
 import '../services/bandit_service.dart';
+import '../services/markov_service.dart';
+import '../services/thompson_service.dart';
+import '../services/ucb_service.dart';
+import '../services/random_service.dart';
 import '../widgets/janken_buttons.dart';
 import '../styles/app_styles.dart';
+import 'stats_page.dart';
+import 'chart_page.dart';
+
+Map<String, JankenModel> _createModels() => {
+  'Contextual Bandit': JankenBandit(),
+  '馬可夫鏈': JankenMarkov(),
+  'Thompson Sampling': JankenThompson(),
+  'UCB1': JankenUCB(),
+  'Random（基準線）': JankenRandom(),
+};
 
 class JankenPage extends StatefulWidget {
   const JankenPage({super.key});
@@ -11,10 +26,38 @@ class JankenPage extends StatefulWidget {
 }
 
 class _JankenPageState extends State<JankenPage> {
-  final JankenBandit _bandit = JankenBandit();
+  // 每位玩家有自己的一組 5 個模型
+  final Map<String, Map<String, JankenModel>> _players = {
+    '玩家 1': _createModels(),
+  };
+  late String _currentPlayer = _players.keys.first;
+  Map<String, JankenModel> get _models => _players[_currentPlayer]!;
+
+  String? _lastChoice;
 
   void _play(String choice) {
-    setState(() => _bandit.play(choice));
+    setState(() {
+      _lastChoice = choice;
+      for (final model in _models.values) {
+        model.play(choice);
+      }
+    });
+  }
+
+  void _addPlayer() {
+    final nextId = _players.length + 1;
+    final name = '玩家 $nextId';
+    setState(() {
+      _players[name] = _createModels();
+      _currentPlayer = name;
+    });
+  }
+
+  void _openStats() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => StatsPage(players: _players)),
+    );
   }
 
   @override
@@ -26,131 +69,122 @@ class _JankenPageState extends State<JankenPage> {
         title: const Text('猜拳'),
         backgroundColor: colorScheme.inversePrimary,
         foregroundColor: colorScheme.onInverseSurface,
+        actions: [
+          IconButton(
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => ChartPage(players: _players)),
+            ),
+            icon: const Icon(Icons.show_chart),
+            tooltip: '勝率曲線',
+          ),
+          IconButton(
+            onPressed: _openStats,
+            icon: const Icon(Icons.bar_chart),
+            tooltip: '勝率統計',
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: AppStyles.bodyPadding,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Card(
-              child: Padding(
-                padding: AppStyles.cardPadding,
-                child: Column(
-                  children: [
-                    Text('本局結果', style: AppStyles.sectionTitle(context)),
-                    const SizedBox(height: AppStyles.spacingMd),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        _LabelValue(label: '你', value: _bandit.lastUserChoice ?? '-'),
-                        _LabelValue(label: '電腦', value: _bandit.lastCpuChoice ?? '-'),
-                      ],
-                    ),
-                    const SizedBox(height: AppStyles.spacingSm),
-                    Text(
-                      _bandit.lastResult,
-                      style: AppStyles.resultTextStyle(_bandit.lastResult, context),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: AppStyles.spacingSm),
-            Text('出拳', style: AppStyles.subsectionTitle(context)),
-            const SizedBox(height: AppStyles.spacingSm),
-            JankenButtons(onChoice: _play),
-            const SizedBox(height: AppStyles.spacingLg),
-            Text('勝率統計', style: AppStyles.sectionTitle(context)),
+            // 玩家選擇
+            Text('玩家', style: AppStyles.sectionTitle(context)),
             const SizedBox(height: AppStyles.spacingSm),
             Card(
               child: Padding(
                 padding: AppStyles.cardPaddingSmall,
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('總局數：${_bandit.total}'),
-                    RichText(
-                      text: TextSpan(
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurface,
-                          fontWeight: FontWeight.w500,
-                        ),
-                        children: [
-                          const TextSpan(text: '你的勝率：'),
-                          TextSpan(
-                            text: JankenBandit.rateStringExclDraws(_bandit.userWins, _bandit.cpuWins),
-                            style: TextStyle(
-                              color: AppStyles.rateColor(_bandit.userWins, _bandit.cpuWins, context),
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          TextSpan(
-                            text: '（不含平手，${_bandit.userWins} 勝 / ${_bandit.cpuWins} 負 / ${_bandit.draws} 平）',
-                          ),
-                        ],
+                    for (final name in _players.keys)
+                      RadioListTile<String>(
+                        title: Text(name),
+                        subtitle: Text('已玩 ${_players[name]!.values.first.total} 局'),
+                        value: name,
+                        groupValue: _currentPlayer,
+                        onChanged: (v) => setState(() => _currentPlayer = v!),
+                        activeColor: colorScheme.primary,
                       ),
+                    TextButton.icon(
+                      onPressed: _addPlayer,
+                      icon: const Icon(Icons.person_add),
+                      label: const Text('新增玩家'),
                     ),
                   ],
                 ),
               ),
             ),
+            const SizedBox(height: AppStyles.spacingMd),
+
+            // 出拳
+            Text('出拳', style: AppStyles.subsectionTitle(context)),
             const SizedBox(height: AppStyles.spacingSm),
-            Text('依電腦出的手', style: AppStyles.subsectionTitle(context)),
-            _StatRow('電腦出剪刀時 你的勝率', _bandit.whenCpuPlayedUserWins['剪刀']!, _bandit.whenCpuPlayedCpuWins['剪刀']!),
-            _StatRow('電腦出石頭時 你的勝率', _bandit.whenCpuPlayedUserWins['石頭']!, _bandit.whenCpuPlayedCpuWins['石頭']!),
-            _StatRow('電腦出布時 你的勝率', _bandit.whenCpuPlayedUserWins['布']!, _bandit.whenCpuPlayedCpuWins['布']!),
+            JankenButtons(onChoice: _play),
+            const SizedBox(height: AppStyles.spacingLg),
+
+            // 本局各模型結果
+            Text('本局結果', style: AppStyles.sectionTitle(context)),
             const SizedBox(height: AppStyles.spacingSm),
-            Text('依你上局出的手', style: AppStyles.subsectionTitle(context)),
-            _StatRow('你上局出剪刀時 你的勝率', _bandit.whenUserPrevUserWins['剪刀']!, _bandit.whenUserPrevCpuWins['剪刀']!),
-            _StatRow('你上局出石頭時 你的勝率', _bandit.whenUserPrevUserWins['石頭']!, _bandit.whenUserPrevCpuWins['石頭']!),
-            _StatRow('你上局出布時 你的勝率', _bandit.whenUserPrevUserWins['布']!, _bandit.whenUserPrevCpuWins['布']!),
+            if (_lastChoice == null)
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Center(child: Text('出拳後顯示各模型對戰結果')),
+                ),
+              )
+            else
+              for (final entry in _models.entries)
+                Card(
+                  child: Padding(
+                    padding: AppStyles.cardPaddingSmall,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(entry.key, style: AppStyles.bodyMediumBold(context)),
+                            ),
+                            Text(
+                              entry.value.lastResult,
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: AppStyles.resultColor(entry.value.lastResult, context),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '你：$_lastChoice　電腦：${entry.value.lastCpuChoice}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+            const SizedBox(height: AppStyles.spacingMd),
+            OutlinedButton.icon(
+              onPressed: _openStats,
+              icon: const Icon(Icons.bar_chart),
+              label: const Text('查看各玩家 / 模型勝率'),
+            ),
+            const SizedBox(height: AppStyles.spacingSm),
+            OutlinedButton.icon(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => ChartPage(players: _players)),
+              ),
+              icon: const Icon(Icons.show_chart),
+              label: const Text('查看勝率曲線'),
+            ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _LabelValue extends StatelessWidget {
-  const _LabelValue({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(label, style: AppStyles.labelStyle(context)),
-        const SizedBox(height: AppStyles.spacingXs),
-        Text(value, style: AppStyles.labelValueStyle(context)),
-      ],
-    );
-  }
-}
-
-class _StatRow extends StatelessWidget {
-  const _StatRow(this.label, this.wins, this.losses);
-
-  final String label;
-  final int wins;
-  final int losses;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: AppStyles.statRowPadding,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Flexible(child: Text(label, style: Theme.of(context).textTheme.bodyMedium)),
-          Text(
-            JankenBandit.rateStringExclDraws(wins, losses),
-            style: AppStyles.bodyMediumBold(context).copyWith(
-              color: AppStyles.rateColor(wins, losses, context),
-            ),
-          ),
-        ],
       ),
     );
   }

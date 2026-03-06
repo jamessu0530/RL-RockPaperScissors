@@ -1,24 +1,21 @@
 import 'dart:math';
-import '../models/q_entry.dart';
 import '../models/janken_model.dart';
 
-/// Contextual Bandit：在每個 context 下直接學哪個 action 的期望獎勵最高
-/// decaying ε-greedy + Laplace 先驗 + 同分隨機
-class JankenBandit extends JankenModel {
+/// Random（隨機基準線）
+///
+/// 不學習，永遠隨機出拳。
+/// 做為基準線：其他模型的勝率如果沒比 Random 好，代表沒學到東西。
+class JankenRandom extends JankenModel {
   @override
-  String get modelName => 'Contextual Bandit';
+  String get modelName => 'Random';
 
-  String _context = 'N';
-  final Map<String, Map<String, QEntry>> _q = {};
-  static const double _epsilonInitial = 0.5;
-  static const double _epsilonMin = 0.05;
-  static const double _epsilonDecay = 0.995;
   final Random _rng = Random();
 
   int _total = 0;
   int _userWins = 0;
   int _cpuWins = 0;
   int _draws = 0;
+  String _prevContext = 'N';
   final Map<String, int> _whenCpuPlayedTotal = {'剪刀': 0, '石頭': 0, '布': 0};
   final Map<String, int> _whenCpuPlayedUserWins = {'剪刀': 0, '石頭': 0, '布': 0};
   final Map<String, int> _whenCpuPlayedCpuWins = {'剪刀': 0, '石頭': 0, '布': 0};
@@ -37,43 +34,8 @@ class JankenBandit extends JankenModel {
   @override Map<String, int> get whenUserPrevUserWins => Map.unmodifiable(_whenUserPrevUserWins);
   @override Map<String, int> get whenUserPrevCpuWins => Map.unmodifiable(_whenUserPrevCpuWins);
 
-  QEntry _getQ(String state, String action) {
-    _q[state] ??= {};
-    _q[state]![action] ??= QEntry();
-    return _q[state]![action]!;
-  }
-
-  double get _epsilon {
-    final v = _epsilonInitial * pow(_epsilonDecay, _total).toDouble();
-    return v < _epsilonMin ? _epsilonMin : v;
-  }
-
   @override
-  String selectAction() {
-    if (_rng.nextDouble() < _epsilon) {
-      return JankenModel.choices[_rng.nextInt(3)];
-    }
-    double bestVal = double.negativeInfinity;
-    final bestActions = <String>[];
-    for (final a in JankenModel.choices) {
-      final v = _getQ(_context, a).value;
-      if (v > bestVal) {
-        bestVal = v;
-        bestActions
-          ..clear()
-          ..add(a);
-      } else if (v == bestVal) {
-        bestActions.add(a);
-      }
-    }
-    return bestActions[_rng.nextInt(bestActions.length)];
-  }
-
-  static int _reward(String resultText) {
-    if (resultText == '你輸了') return 1;
-    if (resultText == '你贏了') return -1;
-    return 0;
-  }
+  String selectAction() => JankenModel.choices[_rng.nextInt(3)];
 
   @override
   void play(String userChoice) {
@@ -90,7 +52,6 @@ class JankenBandit extends JankenModel {
       r = '你輸了';
     }
 
-    final rew = _reward(r);
     final userWon = r == '你贏了';
 
     _total++;
@@ -101,17 +62,13 @@ class JankenBandit extends JankenModel {
     _whenCpuPlayedTotal[cpu] = _whenCpuPlayedTotal[cpu]! + 1;
     if (userWon) _whenCpuPlayedUserWins[cpu] = _whenCpuPlayedUserWins[cpu]! + 1;
     if (r == '你輸了') _whenCpuPlayedCpuWins[cpu] = _whenCpuPlayedCpuWins[cpu]! + 1;
-    if (_context != 'N') {
-      _whenUserPrevTotal[_context] = _whenUserPrevTotal[_context]! + 1;
-      if (userWon) _whenUserPrevUserWins[_context] = _whenUserPrevUserWins[_context]! + 1;
-      if (r == '你輸了') _whenUserPrevCpuWins[_context] = _whenUserPrevCpuWins[_context]! + 1;
+    if (_prevContext != 'N') {
+      _whenUserPrevTotal[_prevContext] = _whenUserPrevTotal[_prevContext]! + 1;
+      if (userWon) _whenUserPrevUserWins[_prevContext] = _whenUserPrevUserWins[_prevContext]! + 1;
+      if (r == '你輸了') _whenUserPrevCpuWins[_prevContext] = _whenUserPrevCpuWins[_prevContext]! + 1;
     }
 
-    final entry = _getQ(_context, cpu);
-    entry.sum += rew;
-    entry.count++;
-
-    _context = userChoice;
+    _prevContext = userChoice;
     lastUserChoice = userChoice;
     lastCpuChoice = cpu;
     lastResult = r;

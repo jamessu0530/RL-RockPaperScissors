@@ -1,19 +1,23 @@
 import 'dart:math';
-import '../models/q_entry.dart';
 import '../models/janken_model.dart';
 
-/// Contextual Bandit：在每個 context 下直接學哪個 action 的期望獎勵最高
-/// decaying ε-greedy + Laplace 先驗 + 同分隨機
-class JankenBandit extends JankenModel {
+/// UCB1（Upper Confidence Bound）
+///
+/// 跟 ε-greedy 和 Thompson Sampling 同屬 Bandit 系列，但探索策略不同：
+/// - 選動作時用 UCB 公式：Q(s,a) + c * sqrt(ln(N) / n(s,a))
+/// - Q(s,a) = 平均 reward（利用項）
+/// - c * sqrt(ln(N) / n(s,a)) = 信賴上界（探索項：被選越少次、探索越多）
+/// - 不需要 ε 或機率取樣，純粹靠公式平衡 exploration vs exploitation
+class JankenUCB extends JankenModel {
   @override
-  String get modelName => 'Contextual Bandit';
+  String get modelName => 'UCB1';
 
   String _context = 'N';
-  final Map<String, Map<String, QEntry>> _q = {};
-  static const double _epsilonInitial = 0.5;
-  static const double _epsilonMin = 0.05;
-  static const double _epsilonDecay = 0.995;
+  static const double _c = 1.4; // 探索係數
   final Random _rng = Random();
+
+  // Q table：sum 和 count
+  final Map<String, Map<String, _UCBEntry>> _q = {};
 
   int _total = 0;
   int _userWins = 0;
@@ -37,32 +41,45 @@ class JankenBandit extends JankenModel {
   @override Map<String, int> get whenUserPrevUserWins => Map.unmodifiable(_whenUserPrevUserWins);
   @override Map<String, int> get whenUserPrevCpuWins => Map.unmodifiable(_whenUserPrevCpuWins);
 
-  QEntry _getQ(String state, String action) {
+  _UCBEntry _getEntry(String state, String action) {
     _q[state] ??= {};
-    _q[state]![action] ??= QEntry();
+    _q[state]![action] ??= _UCBEntry();
     return _q[state]![action]!;
   }
 
-  double get _epsilon {
-    final v = _epsilonInitial * pow(_epsilonDecay, _total).toDouble();
-    return v < _epsilonMin ? _epsilonMin : v;
+  /// 在該 state 下各 action 被選的總次數
+  int _totalVisits(String state) {
+    int sum = 0;
+    for (final a in JankenModel.choices) {
+      sum += _getEntry(state, a).count;
+    }
+    return sum;
   }
 
   @override
   String selectAction() {
-    if (_rng.nextDouble() < _epsilon) {
-      return JankenModel.choices[_rng.nextInt(3)];
+    final n = _totalVisits(_context);
+
+    // 還有沒試過的 action，先試
+    final untried = <String>[];
+    for (final a in JankenModel.choices) {
+      if (_getEntry(_context, a).count == 0) untried.add(a);
     }
-    double bestVal = double.negativeInfinity;
+    if (untried.isNotEmpty) {
+      return untried[_rng.nextInt(untried.length)];
+    }
+
+    double bestUCB = double.negativeInfinity;
     final bestActions = <String>[];
     for (final a in JankenModel.choices) {
-      final v = _getQ(_context, a).value;
-      if (v > bestVal) {
-        bestVal = v;
+      final entry = _getEntry(_context, a);
+      final ucb = entry.mean + _c * sqrt(log(n) / entry.count);
+      if (ucb > bestUCB) {
+        bestUCB = ucb;
         bestActions
           ..clear()
           ..add(a);
-      } else if (v == bestVal) {
+      } else if (ucb == bestUCB) {
         bestActions.add(a);
       }
     }
@@ -107,7 +124,7 @@ class JankenBandit extends JankenModel {
       if (r == '你輸了') _whenUserPrevCpuWins[_context] = _whenUserPrevCpuWins[_context]! + 1;
     }
 
-    final entry = _getQ(_context, cpu);
+    final entry = _getEntry(_context, cpu);
     entry.sum += rew;
     entry.count++;
 
@@ -119,4 +136,10 @@ class JankenBandit extends JankenModel {
     final decided = _userWins + _cpuWins;
     winRateHistory.add(decided > 0 ? _userWins / decided * 100 : 0);
   }
+}
+
+class _UCBEntry {
+  int sum = 0;
+  int count = 0;
+  double get mean => count == 0 ? 0.0 : sum / count;
 }

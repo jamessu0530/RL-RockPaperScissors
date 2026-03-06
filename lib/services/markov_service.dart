@@ -1,19 +1,22 @@
 import 'dart:math';
-import '../models/q_entry.dart';
 import '../models/janken_model.dart';
 
-/// Contextual Bandit：在每個 context 下直接學哪個 action 的期望獎勵最高
-/// decaying ε-greedy + Laplace 先驗 + 同分隨機
-class JankenBandit extends JankenModel {
+/// 馬可夫鏈：用轉移機率矩陣預測玩家下一步，出能剋制的那一手
+///
+/// - 狀態 = 玩家上一局出什麼
+/// - 記錄 transition[prev][next] 的次數
+/// - 預測：在目前 state 下，找 argmax_next transition[state][next]
+/// - 電腦出能贏 predicted 的手
+class JankenMarkov extends JankenModel {
   @override
-  String get modelName => 'Contextual Bandit';
+  String get modelName => '馬可夫鏈';
 
-  String _context = 'N';
-  final Map<String, Map<String, QEntry>> _q = {};
-  static const double _epsilonInitial = 0.5;
-  static const double _epsilonMin = 0.05;
-  static const double _epsilonDecay = 0.995;
+  static const String _stateNone = 'N';
+  String _state = _stateNone;
   final Random _rng = Random();
+
+  // transition[prev][next] = count
+  final Map<String, Map<String, int>> _transition = {};
 
   int _total = 0;
   int _userWins = 0;
@@ -37,42 +40,49 @@ class JankenBandit extends JankenModel {
   @override Map<String, int> get whenUserPrevUserWins => Map.unmodifiable(_whenUserPrevUserWins);
   @override Map<String, int> get whenUserPrevCpuWins => Map.unmodifiable(_whenUserPrevCpuWins);
 
-  QEntry _getQ(String state, String action) {
-    _q[state] ??= {};
-    _q[state]![action] ??= QEntry();
-    return _q[state]![action]!;
+  int _getCount(String prev, String next) {
+    return _transition[prev]?[next] ?? 0;
   }
 
-  double get _epsilon {
-    final v = _epsilonInitial * pow(_epsilonDecay, _total).toDouble();
-    return v < _epsilonMin ? _epsilonMin : v;
+  void _addCount(String prev, String next) {
+    _transition[prev] ??= {};
+    _transition[prev]![next] = (_transition[prev]![next] ?? 0) + 1;
+  }
+
+  /// 出能剋制 predicted 的那一手
+  static String _counter(String predicted) {
+    switch (predicted) {
+      case '剪刀': return '石頭';
+      case '石頭': return '布';
+      case '布': return '剪刀';
+      default: return JankenModel.choices[Random().nextInt(3)];
+    }
+  }
+
+  /// 預測玩家下一步：argmax_next P(next|state)；同分隨機
+  String _predict() {
+    int bestCount = -1;
+    final bestMoves = <String>[];
+    for (final next in JankenModel.choices) {
+      final c = _getCount(_state, next);
+      if (c > bestCount) {
+        bestCount = c;
+        bestMoves
+          ..clear()
+          ..add(next);
+      } else if (c == bestCount) {
+        bestMoves.add(next);
+      }
+    }
+    return bestMoves[_rng.nextInt(bestMoves.length)];
   }
 
   @override
   String selectAction() {
-    if (_rng.nextDouble() < _epsilon) {
-      return JankenModel.choices[_rng.nextInt(3)];
-    }
-    double bestVal = double.negativeInfinity;
-    final bestActions = <String>[];
-    for (final a in JankenModel.choices) {
-      final v = _getQ(_context, a).value;
-      if (v > bestVal) {
-        bestVal = v;
-        bestActions
-          ..clear()
-          ..add(a);
-      } else if (v == bestVal) {
-        bestActions.add(a);
-      }
-    }
-    return bestActions[_rng.nextInt(bestActions.length)];
-  }
-
-  static int _reward(String resultText) {
-    if (resultText == '你輸了') return 1;
-    if (resultText == '你贏了') return -1;
-    return 0;
+    // 如果目前 state 完全沒資料，隨機出
+    final hasData = _transition[_state]?.values.any((v) => v > 0) ?? false;
+    if (!hasData) return JankenModel.choices[_rng.nextInt(3)];
+    return _counter(_predict());
   }
 
   @override
@@ -90,7 +100,6 @@ class JankenBandit extends JankenModel {
       r = '你輸了';
     }
 
-    final rew = _reward(r);
     final userWon = r == '你贏了';
 
     _total++;
@@ -101,17 +110,16 @@ class JankenBandit extends JankenModel {
     _whenCpuPlayedTotal[cpu] = _whenCpuPlayedTotal[cpu]! + 1;
     if (userWon) _whenCpuPlayedUserWins[cpu] = _whenCpuPlayedUserWins[cpu]! + 1;
     if (r == '你輸了') _whenCpuPlayedCpuWins[cpu] = _whenCpuPlayedCpuWins[cpu]! + 1;
-    if (_context != 'N') {
-      _whenUserPrevTotal[_context] = _whenUserPrevTotal[_context]! + 1;
-      if (userWon) _whenUserPrevUserWins[_context] = _whenUserPrevUserWins[_context]! + 1;
-      if (r == '你輸了') _whenUserPrevCpuWins[_context] = _whenUserPrevCpuWins[_context]! + 1;
+    if (_state != _stateNone) {
+      _whenUserPrevTotal[_state] = _whenUserPrevTotal[_state]! + 1;
+      if (userWon) _whenUserPrevUserWins[_state] = _whenUserPrevUserWins[_state]! + 1;
+      if (r == '你輸了') _whenUserPrevCpuWins[_state] = _whenUserPrevCpuWins[_state]! + 1;
     }
 
-    final entry = _getQ(_context, cpu);
-    entry.sum += rew;
-    entry.count++;
+    // 更新轉移矩陣：state → userChoice
+    _addCount(_state, userChoice);
 
-    _context = userChoice;
+    _state = userChoice;
     lastUserChoice = userChoice;
     lastCpuChoice = cpu;
     lastResult = r;
